@@ -3,7 +3,7 @@
 ### 训练模型
 
 ```
-python main.py -m train --save-dir save/folder/ --name enet --dataset name --dataset-dir ./data/CamVid
+python main.py -m train --save-dir save/folder/ --name enet --dataset camvid --dataset-dir ./data/CamVid
 ```
 使用方法：
 
