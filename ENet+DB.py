@@ -9,7 +9,7 @@ from PIL import Image
 import time
 
 
-# Dataset class
+# 数据集
 class SegmentationDataset(Dataset):
     def __init__(self, image_list, label_list, transform=None, label_transform=None):
         self.image_list = image_list
@@ -36,7 +36,7 @@ class SegmentationDataset(Dataset):
         return image, label
 
 
-# Function to read file paths
+# 加载文件路径
 def read_paths_from_file(file_path):
     image_paths = []
     label_paths = []
@@ -49,28 +49,28 @@ def read_paths_from_file(file_path):
     return image_paths, label_paths
 
 
-# Read paths from file
+
 file_path = r'/mnt/workspace/ENet/train1.txt'
 image_paths, label_paths = read_paths_from_file(file_path)
 
-# Image transforms
+# 图像转换
 transform = transforms.Compose([
     transforms.Resize((256, 256)),  # Resize
     transforms.ToTensor(),  # Convert to tensor
 ])
 
-# Label transforms
+# 标签转换
 label_transform = transforms.Compose([
     transforms.Resize((256, 256)),  # Resize
     transforms.Lambda(lambda img: torch.as_tensor(np.array(img), dtype=torch.long))  # Convert to tensor
 ])
 
-# Create dataset
+# 创建数据集
 train_dataset = SegmentationDataset(image_paths, label_paths, transform=transform, label_transform=label_transform)
 train_loader = DataLoader(train_dataset, batch_size=2, shuffle=True)
 
 
-# Define ENet model (same as before)
+# 定义ENet模型
 class InitialBlock(nn.Module):
     def __init__(self, in_channels, out_channels, bias=False, relu=True):
         super().__init__()
@@ -253,7 +253,7 @@ class ENet(nn.Module):
         return x
 
 
-# Define DistanceBasedSegmentation
+# 定义 DB
 class DistanceBasedSegmentation:
     def __init__(self, num_categories):
         self.num_categories = num_categories
@@ -357,11 +357,12 @@ def train_model(model, train_loader, criterion, optimizer, num_epochs=25, print_
     print(f'Best Loss: {best_loss:.4f}, Best Accuracy: {best_accuracy:.4f}')
 
 
-# Initialize model, criterion, and optimizer
+#
 num_classes = 12
 model = ENet(num_classes)
 criterion = nn.CrossEntropyLoss()
 optimizer = optim.Adam(model.parameters(), lr=0.001)
 
-# Train the model
+# 训练模型
 train_model(model, train_loader, criterion, optimizer, num_epochs=25, print_batches=3)
+#+DB
