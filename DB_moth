@@ -28,18 +28,3 @@ class DistanceBasedSegmentation:
                 # 使用DB方法进行分类
                 classified_feature[i, j] = self.classify_element(element, self.categories)
         return classified_feature
-
-# 示例使用
-# 假设有3个通道的特征向量，每个通道的尺寸为10x10
-num_categories = 10
-feature_vector1 = np.random.rand(10, 10)
-feature_vector2 = np.random.rand(10, 10)
-feature_vector3 = np.random.rand(10, 10)
-
-# 初始化DB方法
-db_method = DistanceBasedSegmentation(num_categories)
-
-# 对特征向量进行融合和分类
-classified_feature = db_method.fusion_and_classify([feature_vector1, feature_vector2, feature_vector3])
-
-print("分类后的特征:", classified_feature)
