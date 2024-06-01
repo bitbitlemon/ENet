@@ -1,106 +1,147 @@
-import numpy as np
-from scipy.ndimage import distance_transform_edt, label
-from skimage.segmentation import find_boundaries
+import torch
 
-# 示例数据：三个通道的分类结果
-layer_r = np.array([[1, 1, 2], [1, 2, 2], [3, 3, 2]])
-layer_g = np.array([[1, 1, 2], [1, 3, 2], [3, 3, 3]])
-layer_b = np.array([[1, 1, 1], [1, 2, 2], [3, 3, 3]])
+def db_method(channels, M):
+    """
+    DB方法的主函数
+    这段实现了一种基于距离的分割方法，主要用于多通道图像的分类和边界标记。
+    :param channels: 输入的多个通道，形状为 (batch_size, n, H, W)
+    :param M: 每个通道中的类别数
+    :return: 结果分类后的单一通道，形状为 (batch_size, H, W)
+    作用：这是算法的主函数，负责调用其他函数，完成整体的边界合并、区域标记、分类等工作。
+    输入：channels是输入的多个通道，形状为 (batch_size, n, H, W)；M是每个通道中的类别数。
+    输出：返回分类后的单一通道，形状为 (batch_size, H, W)。
+    """
+    batch_size, n, H, W = channels.shape  # 提取输入张量的形状
 
-# 计算每个通道的边界线
-def compute_boundary(layer):
-    return find_boundaries(layer, mode='inner')
+    # 创建一个全零的布尔张量，用于存放合并后的边界
+    B_new = torch.zeros((batch_size, H, W), dtype=torch.bool)
 
+    # 将各个通道的边界合并到一起
+    for channel in channels.permute(1, 0, 2, 3):  # 调整维度为 (n, batch_size, H, W)
+        for m in range(M):
+            B_new |= (channel == m)  # 将每个通道的边界添加到B_new
 
-# 对三个通道分别计算边界线
-boundary_r = compute_boundary(layer_r)
-boundary_g = compute_boundary(layer_g)
-boundary_b = compute_boundary(layer_b)
+    results = []  # 存储每个样本的结果
+    for b in range(batch_size):
+        # 标记区域
+        regions = label_regions(B_new[b])
+        # 找到每个区域的最优点
+        optimal_points = find_optimal_points(regions)
+        # 对最优点进行排序
+        optimal_points.sort(key=lambda p: tuple(p))
+        # 计算每个区域包含的不同类别数和类别集合
+        num, pc = calculate_num_pc(optimal_points, channels[:, b, :, :], M)
+        # 根据距离计算方法对区域进行分类
+        result = db_calculate_method(optimal_points, num, pc, channels[:, b, :, :])
+        results.append(result)
+    
+    return torch.stack(results)  # 将结果堆叠成一个张量
 
-# 合并边界线，形成一个新的通道（combined_boundary），表示所有层的分界线的并集
-combined_boundary = np.maximum(boundary_r, np.maximum(boundary_g, boundary_b))
+def label_regions(boundary):
+    """
+    根据边界标记区域
+    :param boundary: 边界图，形状为 (H, W)
+    :return: 标记后的区域，形状为 (H, W)
+    作用：标记边界区域，返回唯一标记和标记后的区域。
+    原因：标记区域可以将图像分割成多个独立的区域，便于对每个区域进行独立处理。
+    """
+    # 标记边界区域，返回唯一标记和标记后的区域
+    labeled, num_features = torch.unique(boundary, return_inverse=True)
+    labeled = labeled.to(dtype=torch.int64)  # 确保标签是整数类型
+    return labeled.view(boundary.shape)  # 确保形状匹配
 
-print("合并后的边界线：")
-print(combined_boundary)
+def find_optimal_points(regions):
+    """
+    找到每个区域的最优点
+    :param regions: 标记后的区域图
+    :return: 每个区域的最优点
+    作用：找到每个区域的最优点，用于后续的分类。
+    原因：选择最佳点作为代表点，便于后续的距离计算和分类操作。
+    """
+    optimal_points = []
+    unique_regions = torch.unique(regions)
+    for region in unique_regions:
+        points = torch.nonzero(regions == region, as_tuple=False)
+        optimal_point = points[0]  # 默认选择第一个点作为最优点
+        for point in points:
+            for i in range(len(point)):
+                if point[i] < optimal_point[i]:
+                    optimal_point = point
+                    break
+                elif point[i] > optimal_point[i]:
+                    break
+        optimal_points.append(tuple(optimal_point.tolist()))
+    return optimal_points
 
-# 标记合并后的边界线形成的区域
-# labeled_regions：标记每个区域的ID
-# num_regions：区域的数量
-labeled_regions, num_regions = label(combined_boundary == 0)
-print("标记后的区域：")
-print(labeled_regions)
-print("区域数量：", num_regions)
-# 计算每个点到各个类别边界的距离
-# layers：包含三个通道的分类结果
-def compute_distances(layers):
-    distances = []
-    for layer in layers:
-        unique_labels = np.unique(layer)  # 找到每个通道中的唯一类别标签
-        # 为每个类别标签计算距离变换
-        distance_map = {label: distance_transform_edt(layer != label) for label in unique_labels}
-        distances.append(distance_map)
+def calculate_num_pc(optimal_points, channels, M):
+    """
+    计算每个区域包含的不同类别数和类别集合
+    :param optimal_points: 每个区域的最优点
+    :param channels: 多通道图像
+    :param M: 类别数
+    :return: 每个区域包含的不同类别数和类别集合
+    作用：计算每个区域包含的不同类别数和类别集合。
+    原因：确定每个区域的类别数和类别集合，为后续的分类操作提供依据。
+    """
+    num = []
+    pc = []
+    for point in optimal_points:
+        categories = set()
+        for channel in channels:
+            categories.add(channel[tuple(point)])
+        num.append(len(categories))
+        pc.append(categories)
+    return num, pc
+
+def db_calculate_method(optimal_points, num, pc, channels):
+    """
+    DB计算方法，根据距离计算区域分类结果
+    :param optimal_points: 每个区域的最优点
+    :param num: 每个区域包含的不同类别数
+    :param pc: 每个区域的类别集合
+    :param channels: 多通道图像
+    :return: 分类结果
+    作用：根据距离计算方法对区域进行分类。
+    原因：利用距离计算方法，确定每个区域的分类结果。
+    """
+    result = torch.zeros(channels[0].shape, dtype=torch.long)
+    for i, point in enumerate(optimal_points):
+        if num[i] == 1:
+            result[tuple(point)] = list(pc[i])[0]
+        else:
+            distances = calculate_distances(tuple(point), pc[i], channels)
+            result[tuple(point)] = min(distances, key=distances.get)
+    return result
+
+def calculate_distances(point, categories, channels):
+    """
+    计算点到各个类别边界的距离
+    :param point: 点的坐标
+    :param categories: 类别集合
+    :param channels: 多通道图像
+    :return: 点到各个类别边界的距离
+    作用：计算点到各个类别边界的距离，用于分类决策。
+    原因：通过距离计算，判断点更接近哪个类别的边界，确定其分类。
+    """
+    distances = {}
+    for category in categories:
+        distance = 0
+        for i, channel in enumerate(channels):
+            if channel[point] != category:
+                boundary = find_boundary(channel, category)
+                distance += torch.dist(torch.tensor(point, dtype=torch.float32),
+                                       torch.tensor(boundary, dtype=torch.float32))
+        distances[category] = distance
     return distances
-layers = [layer_r, layer_g, layer_b]
-# distances：一个列表，每个元素是一个字典，字典键是类别标签，值是到该类别边界的距离矩阵
-distances = compute_distances(layers)
-# 确定每个区域的分类，只考虑pc=2和pc=3的情况
-def determine_class(layers, distances, labeled_regions, num_regions):
-    result_layer = np.zeros_like(labeled_regions)  # 用于存储最终分类结果的矩阵
-    for region_id in range(1, num_regions + 1):
-        # 获取当前区域的掩码
-        region_mask = (labeled_regions == region_id)
-        # 获取区域内所有点的坐标
-        i_indices, j_indices = np.where(region_mask)
-        # 获取当前区域内所有点在各通道上的类别组合
-        point_classes = [tuple(layers[k][i_indices, j_indices]) for k in range(len(layers))]
-        # 确定当前区域内所有点在各通道上的唯一类别组合
-        unique_classes = list(set(point_classes[0]).union(*point_classes[1:]))
-        if len(unique_classes) == 1:
-            # 如果区域内所有点在所有通道上都属于同一个类别，直接赋值
-            result_layer[region_mask] = unique_classes[0][0]
-        elif len(unique_classes) == 2:
-            # 处理pc=2的情况
-            class_pairs = [(unique_classes[0][0], unique_classes[0][1], unique_classes[1][0]),
-                           (unique_classes[1][0], unique_classes[1][1], unique_classes[0][0])]
-            min_distance = float('inf')
-            best_class = None
-            for cls in class_pairs:
-                d1 = sum(distances[2][cls[2]][region_mask])
-                d2 = sum(distances[0][cls[0]][region_mask]) + sum(distances[1][cls[1]][region_mask])
-                if d1 < d2:
-                    if d1 < min_distance:
-                        min_distance = d1
-                        best_class = cls[0]
-                else:
-                    if d2 < min_distance:
-                        min_distance = d2
-                        best_class = cls[2]
-            result_layer[region_mask] = best_class
-        elif len(unique_classes) == 3:
-            # 处理pc=3的情况
-            # 确定当前区域内所有点在各通道上的类别组合
-            class_combinations = [(unique_classes[0][0], unique_classes[1][0], unique_classes[2][0])]
-            min_distance = float('inf')
-            best_class = None
-            for cls in class_combinations:
-                # d1: 将区域点分配到第一个类别的总距离
-                d1 = sum(distances[1][cls[0]][region_mask]) + sum(distances[2][cls[0]][region_mask])
-                # d2: 将区域点分配到第二个类别的总距离
-                d2 = sum(distances[0][cls[1]][region_mask]) + sum(distances[2][cls[1]][region_mask])
-                # d3: 将区域点分配到第三个类别的总距离
-                d3 = sum(distances[0][cls[2]][region_mask]) + sum(distances[1][cls[2]][region_mask])
-                # distances_sum: 每个类别组合的总距离列表
-                distances_sum = [d1, d2, d3]
-                # min_idx: 最小总距离的索引
-                min_idx = np.argmin(distances_sum)
 
-                # 如果当前类别组合的总距离小于之前的最小距离，更新最小距离和最佳类别
-                if distances_sum[min_idx] < min_distance:
-                    min_distance = distances_sum[min_idx]
-                    best_class = cls[min_idx]
-            # 将最佳类别分配给当前区域
-            result_layer[region_mask] = best_class
-    return result_layer
-result_layer = determine_class(layers, distances, labeled_regions, num_regions)
-print("分类结果：")
-print(result_layer)
+def find_boundary(channel, category):
+    """
+    找到某个类别的边界
+    :param channel: 通道图像
+    :param category: 类别
+    :return: 类别边界
+    作用：找到某个类别的边界点。
+    原因：边界点用于距离计算，确定点到边界的距离。
+    """
+    boundaries = torch.nonzero(channel == category, as_tuple=False)
+    return boundaries[0]  # 返回第一个边界点
