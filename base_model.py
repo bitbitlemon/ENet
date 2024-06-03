@@ -1,3 +1,4 @@
+import random
 import torchvision.transforms as transforms
 import numpy as np
 import torch
@@ -6,9 +7,19 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, Dataset
 from torchvision.transforms import ToTensor
 from PIL import Image
-import os
-import time
 
+# 加入随机数使得结果可复现
+def set_seed(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+set_seed(42)  # 随机数
 
 # 数据集类
 class SegmentationDataset(Dataset):
@@ -70,7 +81,6 @@ label_transform = transforms.Compose([
 train_dataset = SegmentationDataset(image_paths, label_paths, transform=transform, label_transform=label_transform)
 train_loader = DataLoader(train_dataset, batch_size=2, shuffle=True)
 
-
 # 定义初始块
 class InitialBlock(nn.Module):
     def __init__(self, in_channels, out_channels, bias=False, relu=True):
@@ -87,7 +97,6 @@ class InitialBlock(nn.Module):
         out = torch.cat((main, ext), 1)
         out = self.batch_norm(out)
         return self.out_activation(out)
-
 
 # 定义常规瓶颈层
 class RegularBottleneck(nn.Module):
@@ -127,7 +136,6 @@ class RegularBottleneck(nn.Module):
         ext = self.ext_regul(ext)
         out = main + ext
         return self.out_activation(out)
-
 
 # 定义下采样瓶颈层
 class DownsamplingBottleneck(nn.Module):
@@ -169,7 +177,6 @@ class DownsamplingBottleneck(nn.Module):
         out = main + ext
         return self.out_activation(out), max_indices
 
-
 # 定义上采样瓶颈层
 class UpsamplingBottleneck(nn.Module):
     def __init__(self, in_channels, out_channels, internal_ratio=4, dropout_prob=0, bias=False, relu=True):
@@ -203,7 +210,6 @@ class UpsamplingBottleneck(nn.Module):
         ext = self.ext_regul(ext)
         out = main + ext
         return self.out_activation(out)
-
 
 # 定义ENet模型
 class ENet(nn.Module):
@@ -256,7 +262,6 @@ class ENet(nn.Module):
         x = self.fullconv(x)
         return x
 
-
 # 计算像素准确率
 def pixel_accuracy(output, target):
     _, preds = torch.max(output, 1)
@@ -273,12 +278,7 @@ optimizer = optim.Adam(model.parameters(), lr=0.001)
 
 # 训练函数
 def train_model(model, train_loader, criterion, optimizer, num_epochs=25, print_batches=3):
-    total_start_time = time.time()  # 记录总的训练开始时间
-    best_loss = float('inf')
-    best_accuracy = 0.0
-
     for epoch in range(num_epochs):
-        epoch_start_time = time.time()  # 记录每个 epoch 的开始时间
         model.train()
         running_loss = 0.0
         running_accuracy = 0.0
@@ -296,25 +296,9 @@ def train_model(model, train_loader, criterion, optimizer, num_epochs=25, print_
             running_loss += loss.item() * inputs.size(0)
             running_accuracy += pixel_accuracy(outputs, labels) * inputs.size(0)
             batch_count += 1
-
         epoch_loss = running_loss / len(train_loader.dataset)
         epoch_accuracy = running_accuracy / len(train_loader.dataset)
-        
-        # 记录最佳损失和准确率
-        if epoch_loss < best_loss:
-            best_loss = epoch_loss
-        if epoch_accuracy > best_accuracy:
-            best_accuracy = epoch_accuracy
-
-        epoch_end_time = time.time()  # 记录每个 epoch 的结束时间
-        epoch_duration = epoch_end_time - epoch_start_time
-        print(f'Epoch {epoch}/{num_epochs - 1}, Loss: {epoch_loss:.4f}, Accuracy: {epoch_accuracy:.4f}, Time: {epoch_duration:.2f}s')
-
-    total_end_time = time.time()  # 记录总的训练结束时间
-    total_duration = total_end_time - total_start_time
-    print(f'Total training time: {total_duration:.2f}s')
-    print(f'Best Loss: {best_loss:.4f}, Best Accuracy: {best_accuracy:.4f}')
+        print(f'Epoch {epoch}/{num_epochs - 1}, Loss: {epoch_loss:.4f}, Accuracy: {epoch_accuracy:.4f}')
 
 # 训练模型并打印形状信息
 train_model(model, train_loader, criterion, optimizer, num_epochs=25, print_batches=3)
-#无DB
