@@ -278,6 +278,8 @@ optimizer = optim.Adam(model.parameters(), lr=0.001)
 
 # 训练函数
 def train_model(model, train_loader, criterion, optimizer, num_epochs=25, print_batches=3):
+    best_accuracy = 0.0
+    best_epoch = 0
     for epoch in range(num_epochs):
         model.train()
         running_loss = 0.0
@@ -299,6 +301,11 @@ def train_model(model, train_loader, criterion, optimizer, num_epochs=25, print_
         epoch_loss = running_loss / len(train_loader.dataset)
         epoch_accuracy = running_accuracy / len(train_loader.dataset)
         print(f'Epoch {epoch}/{num_epochs - 1}, Loss: {epoch_loss:.4f}, Accuracy: {epoch_accuracy:.4f}')
+        if epoch_accuracy > best_accuracy:
+            best_accuracy = epoch_accuracy
+            best_epoch = epoch
+    
+    print(f'Best Accuracy: {best_accuracy:.4f} at Epoch {best_epoch}')
 
 # 训练模型并打印形状信息
 train_model(model, train_loader, criterion, optimizer, num_epochs=25, print_batches=3)
