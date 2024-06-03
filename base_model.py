@@ -304,8 +304,11 @@ def train_model(model, train_loader, criterion, optimizer, num_epochs=25, print_
         if epoch_accuracy > best_accuracy:
             best_accuracy = epoch_accuracy
             best_epoch = epoch
+        if epoch_loss <best_loss:
+            best_loss = epoch_loss
+            best_epoch =epoch
     
-    print(f'Best Accuracy: {best_accuracy:.4f} at Epoch {best_epoch}')
+    print(f'Best Accuracy: {best_accuracy:.4f} at Epoch {best_epoch},Best loss:{best_loss:.4f}')
 
 # 训练模型并打印形状信息
 train_model(model, train_loader, criterion, optimizer, num_epochs=25, print_batches=3)
