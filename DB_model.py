@@ -387,4 +387,4 @@ with torch.no_grad():
         print("Model output shape:", model_out.shape)
         result = db_method(model_out, num_classes)
         print("Result shape:", result.shape)
-        break  # 仅处理一个批次进行测试
+        break  
