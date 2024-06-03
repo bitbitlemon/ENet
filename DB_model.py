@@ -1,3 +1,4 @@
+import random
 import torchvision.transforms as transforms
 import numpy as np
 import torch
@@ -6,10 +7,21 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, Dataset
 from torchvision.transforms import ToTensor
 from PIL import Image
-import time
 
+# 加入随机数保证结果可复现
+def set_seed(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
-# 数据集
+set_seed(42) #随机数
+
+# 数据集类
 class SegmentationDataset(Dataset):
     def __init__(self, image_list, label_list, transform=None, label_transform=None):
         self.image_list = image_list
@@ -35,8 +47,7 @@ class SegmentationDataset(Dataset):
 
         return image, label
 
-
-# 加载文件路径
+# 读取文件路径函数
 def read_paths_from_file(file_path):
     image_paths = []
     label_paths = []
@@ -48,29 +59,27 @@ def read_paths_from_file(file_path):
             label_paths.append(label_path)
     return image_paths, label_paths
 
-
-
+# 读取路径信息
 file_path = r'/mnt/workspace/ENet/train1.txt'
 image_paths, label_paths = read_paths_from_file(file_path)
 
-# 图像转换
+# 图像变换
 transform = transforms.Compose([
-    transforms.Resize((256, 256)),  # Resize
-    transforms.ToTensor(),  # Convert to tensor
+    transforms.Resize((256, 256)),  # 调整大小
+    transforms.ToTensor(),  # 转换为张量
 ])
 
-# 标签转换
+# 标签变换
 label_transform = transforms.Compose([
-    transforms.Resize((256, 256)),  # Resize
-    transforms.Lambda(lambda img: torch.as_tensor(np.array(img), dtype=torch.long))  # Convert to tensor
+    transforms.Resize((256, 256)),  # 调整大小
+    transforms.Lambda(lambda img: torch.as_tensor(np.array(img), dtype=torch.long))  # 转换为张量
 ])
 
 # 创建数据集
 train_dataset = SegmentationDataset(image_paths, label_paths, transform=transform, label_transform=label_transform)
 train_loader = DataLoader(train_dataset, batch_size=2, shuffle=True)
 
-
-# 定义ENet模型
+# 定义初始块
 class InitialBlock(nn.Module):
     def __init__(self, in_channels, out_channels, bias=False, relu=True):
         super().__init__()
@@ -87,7 +96,7 @@ class InitialBlock(nn.Module):
         out = self.batch_norm(out)
         return self.out_activation(out)
 
-
+# 定义常规瓶颈层
 class RegularBottleneck(nn.Module):
     def __init__(self, channels, internal_ratio=4, kernel_size=3, padding=0, dilation=1, asymmetric=False,
                  dropout_prob=0, bias=False, relu=True):
@@ -126,7 +135,7 @@ class RegularBottleneck(nn.Module):
         out = main + ext
         return self.out_activation(out)
 
-
+# 定义下采样瓶颈层
 class DownsamplingBottleneck(nn.Module):
     def __init__(self, in_channels, out_channels, internal_ratio=4, return_indices=False, dropout_prob=0, bias=False,
                  relu=True):
@@ -166,7 +175,7 @@ class DownsamplingBottleneck(nn.Module):
         out = main + ext
         return self.out_activation(out), max_indices
 
-
+# 定义上采样瓶颈层
 class UpsamplingBottleneck(nn.Module):
     def __init__(self, in_channels, out_channels, internal_ratio=4, dropout_prob=0, bias=False, relu=True):
         super().__init__()
@@ -200,7 +209,7 @@ class UpsamplingBottleneck(nn.Module):
         out = main + ext
         return self.out_activation(out)
 
-
+# 定义ENet模型
 class ENet(nn.Module):
     def __init__(self, num_classes, encoder_relu=False, decoder_relu=True):
         super().__init__()
@@ -227,7 +236,6 @@ class ENet(nn.Module):
         self.upsample5_0 = UpsamplingBottleneck(64, 16, dropout_prob=0.1, relu=decoder_relu)
         self.regular5_1 = RegularBottleneck(16, padding=1, dropout_prob=0.1, relu=decoder_relu)
         self.fullconv = nn.ConvTranspose2d(16, num_classes, kernel_size=3, stride=2, padding=1, output_padding=1)
-
     def forward(self, x):
         x = self.initial_block(x)
         x, max_indices1 = self.downsample1_0(x)
@@ -252,78 +260,102 @@ class ENet(nn.Module):
         x = self.fullconv(x)
         return x
 
-
-# 定义 DB
-class DistanceBasedSegmentation:
-    def __init__(self, num_categories):
-        self.num_categories = num_categories
-        # 假设类别是与元素在相同空间中的点
-        self.categories = np.random.rand(num_categories, 1)
-
-    def calculate_distance(self, point, category):
-        # 计算点到类别的欧几里得距离
-        return np.linalg.norm(point - category)
-
-    def classify_element(self, element, categories):
-        # 计算元素到每个类别的距离
-        distances = [self.calculate_distance(element, category) for category in categories]
-        # 找到距离最小的类别索引
-        min_distance_index = np.argmin(distances)
-        return min_distance_index
-
-    def fusion_and_classify(self, feature_vectors):
-        # 将多个特征向量融合成一个通道
-        fused_feature = np.mean(feature_vectors, axis=0)
-        # 对融合后的特征进行分类
-        classified_feature = np.zeros_like(fused_feature, dtype=int)
-        for i in range(fused_feature.shape[0]):
-            for j in range(fused_feature.shape[1]):
-                element = fused_feature[i, j]
-                # 使用DB方法进行分类
-                classified_feature[i, j] = self.classify_element(element, self.categories)
-        return classified_feature
-
-
-def infer_model(model, dataloader):
-    model.eval()
-    outputs = []
-    with torch.no_grad():
-        for images, _ in dataloader:
-            output = model(images)
-            outputs.append(output)
-    return outputs
-
-
-def process_with_db_segmentation(model, dataloader, db_method):
-    raw_outputs = infer_model(model, dataloader)
-    processed_outputs = []
-
-    for raw_output in raw_outputs:
-        raw_output_np = raw_output.squeeze(0).cpu().numpy()  # Convert to numpy array for processing
-        feature_vectors = np.split(raw_output_np, raw_output_np.shape[0], axis=0)  # Split into channels
-        feature_vectors = [fv.squeeze(0) for fv in feature_vectors]  # Remove channel dimension
-        classified_feature = db_method.fusion_and_classify(feature_vectors)  # Use DB method
-        processed_outputs.append(classified_feature)
-
-    return processed_outputs
-
-
-# Function to calculate pixel accuracy
+# 计算像素准确率
 def pixel_accuracy(output, target):
     _, preds = torch.max(output, 1)
     correct = (preds == target).float()
     acc = correct.sum() / correct.numel()
     return acc
 
+# DB方法
+def db_method(channels, M):
+    batch_size, n, H, W = channels.shape  # 提取输入张量的形状
+    B_new = torch.zeros((batch_size, H, W), dtype=torch.bool)  # 创建一个全零的布尔张量，用于存放合并后的边界
 
-# Training function
+    # 将各个通道的边界合并到一起
+    for channel in channels.permute(1, 0, 2, 3):  # 调整维度为 (n, batch_size, H, W)
+        for m in range(M):
+            B_new |= (channel == m)  # 将每个通道的边界添加到B_new
+
+    results = []  # 存储每个样本的结果
+    for b in range(batch_size):
+        regions = label_regions(B_new[b])  # 标记区域
+        optimal_points = find_optimal_points(regions)  # 找到每个区域的最优点
+        optimal_points.sort(key=lambda p: tuple(p))  # 对最优点进行排序
+        num, pc = calculate_num_pc(optimal_points, channels[:, b, :, :], M)  # 计算每个区域包含的不同类别数和类别集合
+        result = db_calculate_method(optimal_points, num, pc, channels[:, b, :, :])  # 根据距离计算方法对区域进行分类
+        results.append(result)
+
+    return torch.stack(results)  # 将结果堆叠成一个张量
+
+def label_regions(boundary):
+    labeled, num_features = torch.unique(boundary, return_inverse=True)
+    labeled = labeled.to(dtype=torch.int64)  # 确保标签是整数类型
+    return labeled.view(boundary.shape)  # 确保形状匹配
+
+def find_optimal_points(regions):
+    optimal_points = []
+    unique_regions = torch.unique(regions)
+    for region in unique_regions:
+        points = torch.nonzero(regions == region, as_tuple=False)
+        optimal_point = points[0]  # 默认选择第一个点作为最优点
+        for point in points:
+            for i in range(len(point)):
+                if point[i] < optimal_point[i]:
+                    optimal_point = point
+                    break
+                elif point[i] > optimal_point[i]:
+                    break
+        optimal_points.append(tuple(optimal_point.tolist()))
+    return optimal_points
+
+def calculate_num_pc(optimal_points, channels, M):
+    num = []
+    pc = []
+    for point in optimal_points:
+        categories = set()
+        for channel in channels:
+            categories.add(channel[tuple(point)])
+        num.append(len(categories))
+        pc.append(categories)
+    return num, pc
+
+def db_calculate_method(optimal_points, num, pc, channels):
+    result = torch.zeros(channels[0].shape, dtype=torch.long)
+    for i, point in enumerate(optimal_points):
+        if num[i] == 1:
+            result[tuple(point)] = list(pc[i])[0]
+        else:
+            distances = calculate_distances(tuple(point), pc[i], channels)
+            result[tuple(point)] = min(distances, key=distances.get)
+    return result
+
+def calculate_distances(point, categories, channels):
+    distances = {}
+    for category in categories:
+        distance = 0
+        for i, channel in enumerate(channels):
+            if channel[point] != category:
+                boundary = find_boundary(channel, category)
+                distance += torch.dist(torch.tensor(point, dtype=torch.float32),
+                                       torch.tensor(boundary, dtype=torch.float32))
+        distances[category] = distance
+    return distances
+
+def find_boundary(channel, category):
+    boundaries = torch.nonzero(channel == category, as_tuple=False)
+    return boundaries[0]  # 返回第一个边界点
+
+# 模型实例化
+num_classes = 12
+model = ENet(num_classes)
+# 损失函数和优化器
+criterion = nn.CrossEntropyLoss()
+optimizer = optim.Adam(model.parameters(), lr=0.001)
+
+# 训练函数
 def train_model(model, train_loader, criterion, optimizer, num_epochs=25, print_batches=3):
-    total_start_time = time.time()
-    best_loss = float('inf')
-    best_accuracy = 0.0
-
     for epoch in range(num_epochs):
-        epoch_start_time = time.time()
         model.train()
         running_loss = 0.0
         running_accuracy = 0.0
@@ -343,26 +375,16 @@ def train_model(model, train_loader, criterion, optimizer, num_epochs=25, print_
             batch_count += 1
         epoch_loss = running_loss / len(train_loader.dataset)
         epoch_accuracy = running_accuracy / len(train_loader.dataset)
-        if epoch_loss < best_loss:
-            best_loss = epoch_loss
-        if epoch_accuracy > best_accuracy:
-            best_accuracy = epoch_accuracy
-        epoch_end_time = time.time()
-        epoch_duration = epoch_end_time - epoch_start_time
-        print(f'Epoch {epoch}/{num_epochs - 1}, Loss: {epoch_loss:.4f}, Accuracy: {epoch_accuracy:.4f}, Time: {epoch_duration:.2f}s')
+        print(f'Epoch {epoch}/{num_epochs - 1}, Loss: {epoch_loss:.4f}, Accuracy: {epoch_accuracy:.4f}')
 
-    total_end_time = time.time()
-    total_duration = total_end_time - total_start_time
-    print(f'Total training time: {total_duration:.2f}s')
-    print(f'Best Loss: {best_loss:.4f}, Best Accuracy: {best_accuracy:.4f}')
-
-
-#
-num_classes = 12
-model = ENet(num_classes)
-criterion = nn.CrossEntropyLoss()
-optimizer = optim.Adam(model.parameters(), lr=0.001)
-
-# 训练模型
+# 训练模型并打印形状信息
 train_model(model, train_loader, criterion, optimizer, num_epochs=25, print_batches=3)
-#+DB
+
+# 使用 DB 方法处理模型输出
+with torch.no_grad():
+    for inputs, _ in train_loader:
+        model_out = model(inputs)
+        print("Model output shape:", model_out.shape)
+        result = db_method(model_out, num_classes)
+        print("Result shape:", result.shape)
+        break  # 仅处理一个批次进行测试
